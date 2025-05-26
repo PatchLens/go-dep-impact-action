@@ -1,14 +1,17 @@
 # go-dep-impact-action
 
-A GitHub Action that performs a deep, targeted analysis of Go module dependency updates and their effects on your project.
+A GitHub Action for deep, automated risk analysis of Go module dependency updates, and their effects on your project.
 
 This tool is in an early release state. We provide free hosted usage to Open Source projects which have an Apache 2.0, BSD-2-Clause, BSD-3-Clause, or MIT license.
 
-**Usage Note:** The action runs for the entire duration of the analysis, which may take minutes to an hour. This means your GitHub Actions usage minutes will be consumed while polling for status. As an alternative, consider installing our [GitHub App go-dep-impact-app](https://github.com/PatchLens/go-dep-impact-app).
+> **Usage Note:**  
+> The action runs for the full analysis duration, which may range from several minutes to over an hour. GitHub Actions usage minutes are consumed during status polling. For optimized workflows, consider our [GitHub App go-dep-impact-app](https://github.com/PatchLens/go-dep-impact-app).
 
-## Process
+---
 
-This tool is currently provided as a service, with this action conducting the necessary API calls to deliver the analysis results. The provided `GITHUB_TOKEN` is used to validate the repository specifications. The repository must be public, and unit tests must be able to run without any network access to utilize our tool in the current early release state.
+## How PatchLens Works
+
+This action interfaces with the PatchLens service, submitting your repository for deep static and dynamic analysis through our API. Your `GITHUB_TOKEN` is used for authentication. The repository must be public, and all tests must run without network access for analysis to succeed (see [limitations](#limitations)).
 
 You can read details about our [methodology on our website](https://patchlens.com/methodology). At a high level, our tool evaluates the risk of a dependency update by:
 
@@ -16,28 +19,32 @@ You can read details about our [methodology on our website](https://patchlens.co
 * Static analysis to map how your code interacts with those changes
 * Behavior and field state analysis of your running application before and after the update
 
-Once testing is complete, we evaluate the confidence of the analysis by introducing controlled mutations in the dependency and ensuring your expanded tests catch them. By introducing bugs in the same places the module changed, we can perform mutation testing with higher signal and at a faster speed than typically found.
+Once testing is complete, we evaluate the confidence of the analysis by introducing controlled mutations in the dependency and ensuring your expanded tests catch them. By introducing bugs in the same places the module changed, we can get higher signal and at a faster speed.
 
-## Why use this Action?
+---
 
-* **Catch regressions early**
+## Why use PatchLens?
+
+* **Catch regressions early**  
   Automatically surface breaking changes or behavioral shifts before merging or releasing.
-* **Speed up reviews**
+* **Speed up reviews**  
   Provide clear, actionable reports so maintainers can focus on real issues, not guesswork.
-* **Accelerate fixes**
-  When updates introduce regressions, our tool helps you understand where and why faster.
-* **Improve confidence**
+* **Faster debugging**  
+  Field-level insights point directly to the root cause, reducing investigation time.
+* **Improve confidence**  
   Know exactly which parts of your code and tests are impacted by a dependency bump.
+
+---
 
 ## Usage
 
-Include this action in any repository workflow. The composite action handles:
+Add this Action to your workflow to analyze Go module changes. The action:
 
-* Detection of `go.mod` changes
-* Submission and polling of PatchLens analysis
-* Posting a report comment on the PR
+* Detects `go.mod` changes on pull requests
+* Submits the PatchLens analysis job and polls for results
+* Posts a clear, actionable report as a comment on your PR
 
-### Example for Dependabot PRs
+### Example: Analyze Dependabot PRs
 
 Create a file at `.github/workflows/patchlens-dependabot.yml`:
 
@@ -92,4 +99,3 @@ Our tool is still in an early phase of development. Because of this, there are s
 ## Terms of Service
 
 By using this Action, you agree to our [Terms of Service](https://patchlens.com/terms-of-service).
-
