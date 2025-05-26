@@ -1,0 +1,195 @@
+name: 'PatchLens Go Module Update Analysis'
+description: 'Submit request to PatchLens service to analyze a public GitHub repo and validate the dependency update.'
+author: 'PatchLens'
+branding:
+  icon: 'package'
+  color: 'blue'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+inputs:
+  directory:
+    description: 'Sub-directory containing go.mod (relative to repo root)'
+    required: false
+    default: ''
+  timeout_minutes:
+    description: 'Timeout for error retries in minutes'
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout PR code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.ref }}
+        fetch-depth: 0
+        persist-credentials: true
+
+    - name: Setup
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Detect module changes
+      id: go_mod
+      shell: bash
+      run: |
+        BASE_REF=${{ github.event.pull_request.base.ref }}
+        git fetch origin "${BASE_REF}"
+        if [[ -z "${{ inputs.directory }}" || "${{ inputs.directory }}" == "." ]]; then
+          MODPATH='go.mod'
+        else
+          MODPATH="${{ inputs.directory }}/go.mod"
+        fi
+        if git diff --quiet "origin/${BASE_REF}...HEAD" -- "$MODPATH"; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "changed=true"  >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Skip if no module changes
+      if: steps.go_mod.outputs.changed == 'false'
+      run: |
+        echo "✅ no changes in go.mod; skipping PatchLens analysis"
+
+    - name: Run PatchLens analysis
+      if: steps.go_mod.outputs.changed == 'true'
+      id: analysis
+      shell: bash
+      env:
+        HOST: api.patchlens.com
+        REPO: ${{ github.event.pull_request.head.repo.clone_url }}
+        BRANCH: ${{ github.event.pull_request.head.ref }}
+        DIR: ${{ inputs.directory }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euxo pipefail
+
+        # prepare path to go.mod
+        if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
+          GO_MOD="go.mod"
+        else
+          GO_MOD="${DIR%/}/go.mod"
+        fi
+        # load and JSON-escape go.mod
+        GOMOD_PAYLOAD=$(jq -Rs '.' < "${GO_MOD}")
+        # build the request
+        PAYLOAD=$(jq -n \
+          --arg repo   "${REPO}" \
+          --arg branch "${BRANCH}" \
+          --arg dir    "${DIR}" \
+          --argjson gomod "${GOMOD_PAYLOAD}" \
+          '{repo: $repo, branch: $branch, directory: $dir, gomod: $gomod}')
+
+        # submit with retry
+        START=$(date +%s)
+        TIMEOUT=$(( ${{ inputs.timeout_minutes }} * 60 ))
+        until RES=$(curl -sS -X POST "https://${HOST}/analyze-github" \
+                       -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                       -H "Content-Type: application/json" \
+                       -d "${PAYLOAD}"); do
+          NOW=$(date +%s)
+          if (( NOW - START >= TIMEOUT )); then
+            echo "❌ Submission failed after ${TIMEOUT}s" >&2
+            exit 1
+          fi
+          echo "⚠️ Submission failed, retrying in 30s…" >&2
+          sleep 30
+        done
+
+        echo "✅ Analysis started…"
+        JOB_ID=$(echo "${RES}" | jq -r '.id')
+
+        # poll loop
+        while true; do
+          STAT=$(curl -sS -X POST "https://${HOST}/status" \
+            -H "Content-Type: application/json" \
+            -d "{\"id\":\"${JOB_ID}\"}")
+          CODE=$?
+          if [[ "${CODE:-0}" -ne 0 ]]; then
+            NOW=$(date +%s)
+            if (( NOW - START >= TIMEOUT )); then
+              echo "❌ Polling failed after ${TIMEOUT}s" >&2
+              exit 1
+            fi
+            echo "⚠️ Status request failed, retry in 30s…" >&2
+            sleep 30
+            continue
+          fi
+          # save output for possible end comment
+          echo "$STAT" > status.json
+          # reset start so timeout only counts during failures
+          START=$(date +%s)
+          # print any new logs
+          echo "${STAT}" | jq -r '.logs[]?' || true
+
+          QUEUED=$(echo "${STAT}" | jq -r '.queued')
+          RUNNING=$(echo "${STAT}" | jq -r '.running')
+
+          if [[ "${QUEUED}" == "true" ]]; then
+            echo "⏳ queued…"
+            sleep 10
+            continue
+          fi
+
+          if [[ "${RUNNING}" == "false" ]]; then
+            echo "📊 Final report:"
+            echo "${STAT}" | jq '.end_report'
+            echo "✅ Done"
+            break
+          fi
+
+          sleep 10
+        done
+
+    - name: Comment results on PR
+      if: steps.go_mod.outputs.changed == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo:  context.repo.repo,
+            issue_number: context.issue.number,
+            per_page: 100
+          });
+
+          // Delete previous PatchLens report comments
+          for (const c of comments) {
+            if (c.user.login === 'github-actions[bot]' &&
+                c.body.startsWith('## 🔍 PatchLens Analysis Report')) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                comment_id: c.id
+              });
+            }
+          }
+
+          // Load the latest status.json
+          const fs     = require('fs');
+          const data   = JSON.parse(fs.readFileSync('status.json', 'utf8'));
+          const chart  = data.reportChart64 || '';
+          const report = data.end_report || {};
+
+          // Build the new comment in markdown
+          if (chart) {
+            let body = '## 🔍 PatchLens Analysis Report\n\n';
+            body += `![PatchLens Report](data:image/png;base64,${chart})\n\n`;
+            // body += '<details><summary>Detailed JSON metrics</summary>\n\n';
+            // body += '```json\n' + JSON.stringify(report, null, 2) + '\n```\n';
+            // body += '</details>';
+
+            await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+          }
+
