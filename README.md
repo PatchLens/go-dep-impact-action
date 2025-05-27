@@ -2,7 +2,7 @@
 
 A GitHub Action for deep, automated risk analysis of Go module dependency updates, and their effects on your project.
 
-This tool is in an early release state. We provide free hosted usage to Open Source projects which have an Apache 2.0, BSD-2-Clause, BSD-3-Clause, or MIT license.
+This tool is in an early release state. We provide free hosted usage to Open Source projects which have a declared Apache 2.0, BSD-2-Clause, BSD-3-Clause, or MIT license.
 
 > **Usage Note:**  
 > The action runs for the full analysis duration, which may range from several minutes to over an hour. GitHub Actions usage minutes are consumed during status polling. For optimized workflows, consider our [GitHub App go-dep-impact-app](https://github.com/PatchLens/go-dep-impact-app).
@@ -93,9 +93,9 @@ Our tool is still in an early phase of development. Because of this, there are s
 * Tests must be functional without network access ([contact us](https://patchlens.com/contact) for network support)
 * Repositories must be public on GitHub, and have an approved license ([contact us](https://patchlens.com/contact) for private or enterprise support)
 * `go.work` files are not fully supported; analysis must be run separately on each individual go.mod module within the workspace.
-* Test memory usage is limited to 8GB
+* Test memory usage is limited to 8GB (including needed overhead for our tool)
 * Test disk usage is also restricted
 
 ## Terms of Service
 
-By using this Action, you agree to our [Terms of Service](https://patchlens.com/terms-of-service).
+By using this Action, you agree to our "as is" [Terms of Service](https://patchlens.com/terms-of-service) and [Privacy Policy](https://patchlens.com/privacy-policy).
