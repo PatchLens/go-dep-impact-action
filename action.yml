@@ -163,7 +163,6 @@ runs:
         github-token: ${{ inputs.github_token }}
         script: |
           const fs = require('fs');
-          const core = require('@actions/core');
           const data = JSON.parse(fs.readFileSync('status.json', 'utf8'));
           const chartB64 = data.report_chart64 || data.reportChart64 || '';
           if (!chartB64) {
