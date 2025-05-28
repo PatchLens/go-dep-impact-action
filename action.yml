@@ -69,7 +69,7 @@ runs:
       env:
         HOST: api.patchlens.com
         REPO: ${{ github.event.pull_request.head.repo.clone_url }}
-        BRANCH: ${{ github.event.pull_request.head.ref }}
+        BRANCH: ${{ github.event.pull_request.base.ref }}
         DIR: ${{ inputs.directory }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
