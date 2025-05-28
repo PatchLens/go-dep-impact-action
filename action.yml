@@ -156,80 +156,35 @@ runs:
           sleep 10
         done
 
-    - name: Upload report image to PR branch
+    - name: Comment results on PR
       if: steps.go_mod.outputs.changed == 'true'
-      id: upload_report
       uses: actions/github-script@v7
       with:
         github-token: ${{ inputs.github_token }}
         script: |
           const fs = require('fs');
-
+          const core = require('@actions/core');
           const data = JSON.parse(fs.readFileSync('status.json', 'utf8'));
           const chartB64 = data.report_chart64 || data.reportChart64 || '';
           if (!chartB64) {
-            core.info('⚠️ No chart data, skipping upload.');
+            core.info('⚠️ No chart data, skipping comment.');
             return;
           }
 
-          const branch   = context.payload.pull_request.head.ref;
-          const filepath = `.patchlens/report-${Date.now()}.png`;
-          await github.rest.repos.createOrUpdateFileContents({
-            owner:   context.repo.owner,
-            repo:    context.repo.repo,
-            path:    filepath,
-            message: `PatchLens report for PR #${context.issue.number}`,
-            content: chartB64,
-            branch,
-          });
+          const imgMarkdown = `<img src="data:image/png;base64,${chartB64}" alt="PatchLens Report" />`;
 
-          // Build raw URL and set it as a step output
-          const url = `https://raw.githubusercontent.com/${context.repo.owner}/` +
-                      `${context.repo.repo}/${branch}/${filepath}`;
-          core.setOutput('report_url', url);
+          const body = [
+            '## 🔍 PatchLens Analysis Report',
+            '',
+            imgMarkdown,
+            ''
+          ].join('\n');
 
-    - name: Comment results on PR
-      if: steps.go_mod.outputs.changed == 'true'
-      uses: actions/github-script@v7
-      env:
-        REPORT_URL: ${{ steps.upload_report.outputs.report_url }}
-      with:
-        github-token: ${{ inputs.github_token }}
-        script: |
-          const url = process.env.REPORT_URL;
-          if (!url) {
-            core.info('⚠️ No report URL, skipping comment.');
-            return;
-          }
-
-          // delete old comments
-          const { data: comments } = await github.rest.issues.listComments({
-            owner:        context.repo.owner,
-            repo:         context.repo.repo,
-            issue_number: context.issue.number,
-            per_page:     100
-          });
-          for (const c of comments) {
-            if (c.user.login === 'github-actions[bot]' &&
-                c.body.startsWith('## 🔍 PatchLens Analysis Report')) {
-              await github.rest.issues.deleteComment({
-                owner:      context.repo.owner,
-                repo:       context.repo.repo,
-                comment_id: c.id
-              });
-            }
-          }
-
-          // post the new comment
           await github.rest.issues.createComment({
             owner:        context.repo.owner,
             repo:         context.repo.repo,
             issue_number: context.issue.number,
-            body: [
-              '## 🔍 PatchLens Analysis Report',
-              '',
-              `![PatchLens Report](${url})`,
-              ''
-            ].join('\n')
+            body
           });
+
 
