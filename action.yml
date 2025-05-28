@@ -19,6 +19,9 @@ inputs:
     description: 'Timeout for error retries in minutes'
     required: false
     default: '20'
+  github_token:
+    description: 'GitHub token for authentication (use secrets.GITHUB_TOKEN)'
+    required: true
 
 runs:
   using: composite
@@ -31,6 +34,7 @@ runs:
         persist-credentials: true
 
     - name: Setup
+      shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y jq
@@ -54,6 +58,7 @@ runs:
 
     - name: Skip if no module changes
       if: steps.go_mod.outputs.changed == 'false'
+      shell: bash
       run: |
         echo "✅ no changes in go.mod; skipping PatchLens analysis"
 
@@ -66,7 +71,7 @@ runs:
         REPO: ${{ github.event.pull_request.head.repo.clone_url }}
         BRANCH: ${{ github.event.pull_request.head.ref }}
         DIR: ${{ inputs.directory }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euxo pipefail
 
