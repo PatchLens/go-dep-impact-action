@@ -73,7 +73,7 @@ runs:
         DIR: ${{ inputs.directory }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
-        set -euxo pipefail
+        set -euo pipefail
 
         # prepare path to go.mod
         if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
