@@ -6,7 +6,7 @@ branding:
   color: 'blue'
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
@@ -156,50 +156,81 @@ runs:
           sleep 10
         done
 
+    - name: Upload report image to PR branch
+      if: steps.go_mod.outputs.changed == 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github_token }}
+        script: |
+          const fs   = require('fs');
+          const core = require('@actions/core');
+          const ctx  = context;
+
+          const data = JSON.parse(fs.readFileSync('status.json', 'utf8'));
+          const chartBase64 = data.report_chart64 || data.reportChart64 || '';
+          if (!chartBase64) {
+            console.log('⚠️ No chart data, skipping upload.');
+            return;
+          }
+
+          const branch   = ctx.payload.pull_request.head.ref;
+          const filename = `.patchlens/report-${Date.now()}.png`;
+
+          await github.rest.repos.createOrUpdateFileContents({
+            owner:   ctx.repo.owner,
+            repo:    ctx.repo.repo,
+            path:    filename,
+            message: `Add PatchLens report for PR #${ctx.issue.number}`,
+            content: chartBase64,
+            branch
+          });
+
+          // expose the raw URL for the comment step
+          const imageUrl = `https://raw.githubusercontent.com/${ctx.repo.owner}/${ctx.repo.repo}/${branch}/${filename}`;
+          core.setOutput('report_url', imageUrl);
+
     - name: Comment results on PR
       if: steps.go_mod.outputs.changed == 'true'
       uses: actions/github-script@v7
       with:
         github-token: ${{ inputs.github_token }}
         script: |
+          const reportUrl = core.getInput('report_url');
+          if (!reportUrl) {
+            console.log('⚠️ No report URL available, skipping comment.');
+            return;
+          }
+
+          // delete old comments
           const { data: comments } = await github.rest.issues.listComments({
-            owner: context.repo.owner,
-            repo:  context.repo.repo,
-            issue_number: context.issue.number,
+            owner: ctx.repo.owner,
+            repo:  ctx.repo.repo,
+            issue_number: ctx.issue.number,
             per_page: 100
           });
-
-          // Delete previous PatchLens report comments
           for (const c of comments) {
             if (c.user.login === 'github-actions[bot]' &&
                 c.body.startsWith('## 🔍 PatchLens Analysis Report')) {
               await github.rest.issues.deleteComment({
-                owner: context.repo.owner,
-                repo:  context.repo.repo,
+                owner:      ctx.repo.owner,
+                repo:       ctx.repo.repo,
                 comment_id: c.id
               });
             }
           }
 
-          // Load the latest status.json
-          const fs     = require('fs');
-          const data   = JSON.parse(fs.readFileSync('status.json', 'utf8'));
-          const chart  = data.report_chart64 || '';
-          const report = data.end_report || {};
+          // post the new comment
+          const body = [
+            '## 🔍 PatchLens Analysis Report',
+            '',
+            `![PatchLens Report](${reportUrl})`,
+            ''
+          ].join('\n');
 
-          // Build the new comment in markdown
-          if (chart) {
-            let body = '## 🔍 PatchLens Analysis Report\n\n';
-            body += `![PatchLens Report](data:image/png;base64,${chart})\n\n`;
-            // body += '<details><summary>Detailed JSON metrics</summary>\n\n';
-            // body += '```json\n' + JSON.stringify(report, null, 2) + '\n```\n';
-            // body += '</details>';
-
-            await github.rest.issues.createComment({
-              owner:        context.repo.owner,
-              repo:         context.repo.repo,
-              issue_number: context.issue.number,
-              body
-            });
-          }
+          await github.rest.issues.createComment({
+            owner:        ctx.repo.owner,
+            repo:         ctx.repo.repo,
+            issue_number: ctx.issue.number,
+            body
+          });
 
