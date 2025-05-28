@@ -191,11 +191,12 @@ runs:
     - name: Comment results on PR
       if: steps.go_mod.outputs.changed == 'true'
       uses: actions/github-script@v7
+      env:
+        REPORT_URL: ${{ steps.upload_report.outputs.report_url }}
       with:
         github-token: ${{ inputs.github_token }}
-        report_url: ${{ steps.upload_report.outputs.report_url }}
         script: |
-          const url = core.getInput('report_url');
+          const url = process.env.REPORT_URL;
           if (!url) {
             core.info('⚠️ No report URL, skipping comment.');
             return;
