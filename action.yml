@@ -9,6 +9,7 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  actions: read
 
 inputs:
   directory:
@@ -109,6 +110,10 @@ runs:
 
         echo "✅ Analysis started…"
         JOB_ID=$(echo "${RES}" | jq -r '.id')
+        if [[ -z "${JOB_ID}" ]]; then
+          echo "❌ Error submitting to PatchLens: $(echo "${RES}")"
+          exit 1
+        fi
 
         # poll loop
         while true; do

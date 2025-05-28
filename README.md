@@ -64,6 +64,7 @@ jobs:
       - name: Run PatchLens Go Module Update Analysis
         uses: PatchLens/go-dep-impact-action@v1
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           directory: ''         # or 'projects/foo' if go.mod is in a subdirectory
           timeout_minutes: '20' # retry timeout
 ```
@@ -74,17 +75,6 @@ jobs:
 | ----------------- | --------------------------------------------------------- | ------- | -------- |
 | `directory`       | Sub-directory containing `go.mod` (relative to repo root) | `''`    | false    |
 | `timeout_minutes` | Timeout for submission & polling retries, in minutes      | `20`    | false    |
-
-### Permissions
-
-This action requires the following permissions in your workflow:
-
-```yaml
-permissions:
-  contents: read          # for checkout and diff
-  issues: write           # to post and delete report comments
-  pull-requests: write    # to validate PR context
-```
 
 ### Limitations
 
