@@ -257,8 +257,8 @@ runs:
               '## 🔍 PatchLens Analysis Report',
               '',
               `![PatchLens Report](${chartUrl})`,
-+              '',
-+              `📄 [Download detailed JSON report](${jsonUrl})`,
+              '',
+              `📄 [Download detailed JSON report](${jsonUrl})`,
               ''
             ].join('\n')
           });
