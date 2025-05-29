@@ -29,6 +29,7 @@ runs:
     - name: Checkout PR code
       uses: actions/checkout@v4
       with:
+        token: ${{ inputs.github_token }}
         ref: ${{ github.event.pull_request.head.ref }}
         fetch-depth: 0
         persist-credentials: true
@@ -171,7 +172,8 @@ runs:
         B64=$(jq -r '.report_chart64 // .reportChart64' status.json)
         if [[ -z "$B64" ]]; then
           echo "⚠️ No chart data, skipping upload."
-          echo "report_url=" >> "$GITHUB_OUTPUT"
+          echo "report_chart_url=" >> "$GITHUB_OUTPUT"
+          echo "report_json_url=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
@@ -190,11 +192,14 @@ runs:
 
         mkdir -p reports/
         REPO_NAME="${GITHUB_REPOSITORY##*/}"
-        FILE="reports/${REPO_NAME}-${PR_NUMBER}-$(date +%s).png"
-        echo "$B64" | base64 --decode > "$FILE"
+        BASE="reports/${REPO_NAME}-${PR_NUMBER}-$(date +%s)"
+        PNG_FILE="${BASE}.png"
+        JSON_FILE="${BASE}.json"
+        echo "$B64" | base64 --decode > "$PNG_FILE"
+        jq '.end_report' status.json > "$JSON_FILE"
 
         # add, commit, and push with retry on conflict
-        git add "$FILE"
+        git add "$PNG_FILE" "$JSON_FILE"
         git commit -m "PatchLens report for ${REPO_NAME} PR #${PR_NUMBER}"
         for i in {1..10}; do
           if git push origin "$ASSETS_BRANCH"; then
@@ -205,19 +210,22 @@ runs:
           fi
         done
 
-        # export the raw URL
-        echo "report_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${FILE}" >> "$GITHUB_OUTPUT"
+        # export the raw URLs
+        echo "report_chart_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
+        echo "report_json_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
 
     - name: Comment results on PR
       if: steps.go_mod.outputs.changed == 'true'
       uses: actions/github-script@v7
       env:
-        REPORT_URL: ${{ steps.upload_report.outputs.report_url }}
+        REPORT_CHART_URL: ${{ steps.upload_report.outputs.report_chart_url }}
+        REPORT_JSON_URL: ${{ steps.upload_report.outputs.report_json_url }}
       with:
         github-token: ${{ inputs.github_token }}
         script: |
-          const url = process.env.REPORT_URL;
-          if (!url) {
+          const chartUrl = process.env.REPORT_CHART_URL;
+          const jsonUrl = process.env.REPORT_JSON_URL;
+          if (!chartUrl) {
             core.info('⚠️ No report URL, skipping comment.');
             return;
           }
@@ -248,7 +256,9 @@ runs:
             body: [
               '## 🔍 PatchLens Analysis Report',
               '',
-              `![PatchLens Report](${url})`,
+              `![PatchLens Report](${chartUrl})`,
++              '',
++              `📄 [Download detailed JSON report](${jsonUrl})`,
               ''
             ].join('\n')
           });

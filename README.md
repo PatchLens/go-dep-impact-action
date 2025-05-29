@@ -55,6 +55,11 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   analyze:
     if: github.actor == 'dependabot[bot]'
@@ -85,6 +90,10 @@ Our tool is still in an early phase of development. Because of this, there are s
 * `go.work` files are not fully supported; analysis must be run separately on each individual go.mod module within the workspace.
 * Test memory usage is limited to 8GB (including needed overhead for our tool)
 * Test disk usage is also restricted
+
+### Assets
+
+On a successful analysis, the branch `patchlens-assets` will be created. This branch will hold the reports from the analysis to reference in the comments.
 
 ## Terms of Service
 
