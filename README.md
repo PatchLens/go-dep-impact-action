@@ -87,7 +87,10 @@ Our tool is still in an early phase of development. Because of this, there are s
 
 * Tests must be functional without network access ([contact us](https://patchlens.com/contact) for network support)
 * Repositories must be public on GitHub, and have an approved license ([contact us](https://patchlens.com/contact) for private or enterprise support)
-* `go.work` files are not fully supported; analysis must be run separately on each individual go.mod module within the workspace.
+* `go.work` files are not fully supported; analysis must be run separately on each individual go.mod module within the workspace
+* Unit tests must be fast enough to complete within 30 seconds per-test
+* Reflection and network requests are not able to be analyzed, tests dependent on reflection or RPC may not be detected to be relevant for module changes
+* Field size limits exist, currently configured to recurse 20 fields deep and examine slices up to the first 1000 entries
 * Test memory usage is limited to 8GB (including needed overhead for our tool)
 * Test disk usage is also restricted
 
