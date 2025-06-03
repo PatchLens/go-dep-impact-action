@@ -1,5 +1,5 @@
 name: 'PatchLens Go Module Update Analysis'
-description: 'Submit request to PatchLens service to analyze a public GitHub repo and validate the dependency update.'
+description: 'Submit request to PatchLens service to analyze a public GitHub repo and validate the dependency update'
 author: 'PatchLens'
 branding:
   icon: 'package'
@@ -54,7 +54,7 @@ runs:
         if git diff --quiet "origin/${BASE_REF}...HEAD" -- "$MODPATH"; then
           echo "changed=false" >> "$GITHUB_OUTPUT"
         else
-          echo "changed=true"  >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Skip if no module changes
@@ -138,12 +138,13 @@ runs:
           # print any new logs
           echo "${STAT}" | jq -r '.logs[]?' || true
 
-          # Check if error
+          # check if service reports an error
           ERROR=$(echo "${STAT}" | jq -r '.error // empty')
           if [[ "${ERROR}" == "true" ]]; then
             echo "❌ Analysis failed: $(echo "${STAT}" | jq -r '.error_message // "Unknown error"')"
             # set outputs for error and unreachable count
             echo "analysis_error=true" >> "$GITHUB_OUTPUT"
+            echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
@@ -157,8 +158,8 @@ runs:
           fi
 
           if [[ "${RUNNING}" == "false" ]]; then
-            # parse reachable_changed_function_count
-            COUNT=$(jq -r '.module.reachable_changed_function_count // 0' status.json)
+            # parse end report reachable_changed_function_count
+            COUNT=$(jq -r '.end_report.module.reachable_changed_function_count // 0' status.json)
             echo "📊 Final report:"
             echo "${STAT}" | jq '.end_report'
             echo "✅ Done"
@@ -173,7 +174,9 @@ runs:
 
     - name: Upload report image to patchlens-assets branch
       id: upload_report
-      if: steps.go_mod.outputs.changed == 'true' && steps.analysis.outputs.analysis_error == 'false' && steps.analysis.outputs.reachable_changed_function_count != '0'
+      if: steps.go_mod.outputs.changed == 'true' &&
+          steps.analysis.outputs.analysis_error == 'false' &&
+          steps.analysis.outputs.reachable_changed_function_count != '0'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -195,7 +198,7 @@ runs:
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git fetch origin "$ASSETS_BRANCH" || true
 
-        # fetch & checkout (or create) the orphaned assets branch
+        # fetch or create orphaned assets branch
         if git rev-parse --verify "origin/$ASSETS_BRANCH" >/dev/null 2>&1; then
           git checkout -B "$ASSETS_BRANCH" "origin/$ASSETS_BRANCH"
         else
@@ -219,22 +222,24 @@ runs:
           if git push origin "$ASSETS_BRANCH"; then
             break
           else
-            echo "⚠️ Push conflict (attempt $i), fetching & rebasing…"
+            echo "⚠️ Push conflict (attempt $i), fetching & rebasing…" >&2
             git pull --rebase origin "$ASSETS_BRANCH"
           fi
         done
 
-        # export the raw URLs
+        # export raw URLs for the next comment step
         echo "report_chart_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
         echo "report_json_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
 
     - name: Comment results on PR (not reachable)
-      if: steps.go_mod.outputs.changed == 'true' && steps.analysis.outputs.analysis_error == 'false' && steps.analysis.outputs.reachable_changed_function_count == '0'
+      if: steps.go_mod.outputs.changed == 'true' &&
+          steps.analysis.outputs.analysis_error == 'false' &&
+          steps.analysis.outputs.reachable_changed_function_count == '0'
       uses: actions/github-script@v7
       with:
         github-token: ${{ inputs.github_token }}
         script: |
-          // delete old comments
+          // delete old PatchLens comments
           const { data: comments } = await github.rest.issues.listComments({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -252,7 +257,7 @@ runs:
             }
           }
 
-          // post simple message
+          // post simple “not reachable” message
           await github.rest.issues.createComment({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -265,7 +270,9 @@ runs:
           });
 
     - name: Comment results on PR (normal report)
-      if: steps.go_mod.outputs.changed == 'true' && steps.analysis.outputs.analysis_error == 'false' && steps.analysis.outputs.reachable_changed_function_count != '0'
+      if: steps.go_mod.outputs.changed == 'true' &&
+          steps.analysis.outputs.analysis_error == 'false' &&
+          steps.analysis.outputs.reachable_changed_function_count != '0'
       uses: actions/github-script@v7
       env:
         REPORT_CHART_URL: ${{ steps.upload_report.outputs.report_chart_url }}
@@ -280,7 +287,7 @@ runs:
             return;
           }
 
-          // delete old comments
+          // delete old PatchLens comments
           const { data: comments } = await github.rest.issues.listComments({
             owner:        context.repo.owner,
             repo:         context.repo.repo,
@@ -298,7 +305,7 @@ runs:
             }
           }
 
-          // post the new comment
+          // post the report image + JSON link
           await github.rest.issues.createComment({
             owner:        context.repo.owner,
             repo:         context.repo.repo,
