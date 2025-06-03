@@ -170,9 +170,6 @@ runs:
 
           sleep 10
         done
-      outputs:
-        analysis_error: ${{ steps.analysis.outputs.analysis_error }}
-        reachable_changed_function_count: ${{ steps.analysis.outputs.reachable_changed_function_count }}
 
     - name: Upload report image to patchlens-assets branch
       id: upload_report
