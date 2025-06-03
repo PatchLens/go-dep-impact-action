@@ -138,6 +138,15 @@ runs:
           # print any new logs
           echo "${STAT}" | jq -r '.logs[]?' || true
 
+          # Check if error
+          ERROR=$(echo "${STAT}" | jq -r '.error // empty')
+          if [[ "${ERROR}" == "true" ]]; then
+            echo "❌ Analysis failed: $(echo "${STAT}" | jq -r '.error_message // "Unknown error"')"
+            # set outputs for error and unreachable count
+            echo "analysis_error=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           QUEUED=$(echo "${STAT}" | jq -r '.queued')
           RUNNING=$(echo "${STAT}" | jq -r '.running')
 
@@ -148,18 +157,26 @@ runs:
           fi
 
           if [[ "${RUNNING}" == "false" ]]; then
+            # parse reachable_changed_function_count
+            COUNT=$(jq -r '.module.reachable_changed_function_count // 0' status.json)
             echo "📊 Final report:"
             echo "${STAT}" | jq '.end_report'
             echo "✅ Done"
+            # set output for reachable_changed_function_count
+            echo "analysis_error=false" >> "$GITHUB_OUTPUT"
+            echo "reachable_changed_function_count=${COUNT}" >> "$GITHUB_OUTPUT"
             break
           fi
 
           sleep 10
         done
+      outputs:
+        analysis_error: ${{ steps.analysis.outputs.analysis_error }}
+        reachable_changed_function_count: ${{ steps.analysis.outputs.reachable_changed_function_count }}
 
     - name: Upload report image to patchlens-assets branch
       id: upload_report
-      if: steps.go_mod.outputs.changed == 'true'
+      if: steps.go_mod.outputs.changed == 'true' && steps.analysis.outputs.analysis_error == 'false' && steps.analysis.outputs.reachable_changed_function_count != '0'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -214,8 +231,44 @@ runs:
         echo "report_chart_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
         echo "report_json_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
 
-    - name: Comment results on PR
-      if: steps.go_mod.outputs.changed == 'true'
+    - name: Comment results on PR (not reachable)
+      if: steps.go_mod.outputs.changed == 'true' && steps.analysis.outputs.analysis_error == 'false' && steps.analysis.outputs.reachable_changed_function_count == '0'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github_token }}
+        script: |
+          // delete old comments
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            per_page: 100
+          });
+          for (const c of comments) {
+            if (c.user.login === 'github-actions[bot]' &&
+                c.body.startsWith('## 🔍 PatchLens Analysis Report')) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: c.id
+              });
+            }
+          }
+
+          // post simple message
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: [
+              '## 🔍 PatchLens Analysis Report',
+              '',
+              'Module changes not reachable by project'
+            ].join('\n')
+          });
+
+    - name: Comment results on PR (normal report)
+      if: steps.go_mod.outputs.changed == 'true' && steps.analysis.outputs.analysis_error == 'false' && steps.analysis.outputs.reachable_changed_function_count != '0'
       uses: actions/github-script@v7
       env:
         REPORT_CHART_URL: ${{ steps.upload_report.outputs.report_chart_url }}
