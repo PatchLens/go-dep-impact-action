@@ -95,7 +95,7 @@ runs:
         # submit with retry
         START=$(date +%s)
         TIMEOUT=$(( ${{ inputs.timeout_minutes }} * 60 ))
-        until RES=$(curl -sS -X POST "https://${HOST}/analyze-github" \
+        until RES=$(curl -sfS -X POST "https://${HOST}/analyze-github" \
                        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
                        -H "Content-Type: application/json" \
                        -d "${PAYLOAD}"); do
@@ -117,11 +117,9 @@ runs:
 
         # poll loop
         while true; do
-          STAT=$(curl -sS -X POST "https://${HOST}/status" \
+          if ! STAT=$(curl -sfS -X POST "https://${HOST}/status" \
             -H "Content-Type: application/json" \
-            -d "{\"id\":\"${JOB_ID}\"}")
-          CODE=$?
-          if [[ "${CODE:-0}" -ne 0 ]]; then
+            -d "{\"id\":\"${JOB_ID}\"}"); then
             NOW=$(date +%s)
             if (( NOW - START >= TIMEOUT )); then
               echo "❌ Polling failed after ${TIMEOUT}s" >&2
