@@ -80,6 +80,7 @@ jobs:
 | ----------------- | --------------------------------------------------------- | ------- | -------- |
 | `directory`       | Sub-directory containing `go.mod` (relative to repo root) | `''`    | false    |
 | `timeout_minutes` | Timeout for submission & polling retries, in minutes      | `20`    | false    |
+| `github_token`    | Set to ${{ secrets.GITHUB_TOKEN }} for authentication     | `''`    | true     |
 
 ### Limitations
 
