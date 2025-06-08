@@ -43,15 +43,30 @@ runs:
     - name: Detect module changes
       id: go_mod
       shell: bash
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+        BASE_REPO_URL: ${{ github.event.pull_request.base.repo.clone_url }}
       run: |
-        BASE_REF=${{ github.event.pull_request.base.ref }}
-        git fetch origin "${BASE_REF}"
-        if [[ -z "${{ inputs.directory }}" || "${{ inputs.directory }}" == "." ]]; then
-          MODPATH='go.mod'
-        else
-          MODPATH="${{ inputs.directory }}/go.mod"
+        set -euo pipefail
+
+        # Add and feth an upstream remote if missing
+        if ! git remote get-url upstream &>/dev/null; then
+          git remote add upstream "$BASE_REPO_URL"
         fi
-        if git diff --quiet "origin/${BASE_REF}...HEAD" -- "$MODPATH"; then
+        git fetch upstream "$BASE_REF"
+
+        DIFF_BASE="upstream/${BASE_REF}"
+
+        # locate go.mod
+        DIR="${{ inputs.directory }}"
+        if [[ -z "$DIR" || "$DIR" == "." ]]; then
+          MODPATH="go.mod"
+        else
+          DIR="${DIR%/}" # strip any trailing slash
+          MODPATH="${DIR}/go.mod"
+        fi
+
+        if git diff --quiet "${DIFF_BASE}...HEAD" -- "$MODPATH"; then
           echo "changed=false" >> "$GITHUB_OUTPUT"
         else
           echo "changed=true" >> "$GITHUB_OUTPUT"
