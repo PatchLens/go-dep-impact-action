@@ -49,11 +49,13 @@ runs:
       run: |
         set -euo pipefail
 
-        # Add and feth an upstream remote if missing
-        if ! git remote get-url upstream &>/dev/null; then
+        # Add and fetch an upstream remote if missing
+        if git remote get-url upstream &>/dev/null; then
+          git remote set-url upstream "$BASE_REPO_URL"
+        else
           git remote add upstream "$BASE_REPO_URL"
         fi
-        git fetch upstream "$BASE_REF"
+        git fetch --depth=1 upstream "$BASE_REF"
 
         DIFF_BASE="upstream/${BASE_REF}"
 
