@@ -46,39 +46,60 @@ runs:
       env:
         BASE_REF: ${{ github.event.pull_request.base.ref }}
         BASE_REPO_URL: ${{ github.event.pull_request.base.repo.clone_url }}
+        DIR: ${{ inputs.directory }}
       run: |
         set -euo pipefail
 
-        # Add and fetch an upstream remote if missing
+        # Fetch an upstream remote if missing to diff against the base branch
         if git remote get-url upstream &>/dev/null; then
           git remote set-url upstream "$BASE_REPO_URL"
         else
           git remote add upstream "$BASE_REPO_URL"
         fi
         git fetch --depth=1 upstream "$BASE_REF"
-
         DIFF_BASE="upstream/${BASE_REF}"
 
-        # locate go.mod
-        DIR="${{ inputs.directory }}"
-        if [[ -z "$DIR" || "$DIR" == "." ]]; then
-          MODPATH="go.mod"
-        else
-          DIR="${DIR%/}" # strip any trailing slash
-          MODPATH="${DIR}/go.mod"
-        fi
+        # Determine root and scan for modules
+        ROOT="${DIR:-.}"
+        ROOT="${ROOT%/}"
+        echo "🔍 Scanning for go.mod & go.work under '${ROOT}'"
+        mapfile -t files < <(
+          cd "$ROOT"
+          find . \
+            -path './vendor/*' -prune -o \
+            -path './.git/*'    -prune -o \
+            -type f \( -name 'go.mod' -o -name 'go.work' \) \
+            -printf '%P\n'
+        )
 
-        if git diff --quiet "${DIFF_BASE}...HEAD" -- "$MODPATH"; then
+        if (( ${#files[@]} == 0 )); then
+          echo "✅ No go.mod or go.work found; skipping analysis"
           echo "changed=false" >> "$GITHUB_OUTPUT"
-        else
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
 
-    - name: Skip if no module changes
-      if: steps.go_mod.outputs.changed == 'false'
-      shell: bash
-      run: |
-        echo "✅ no changes in go.mod; skipping PatchLens analysis"
+        echo "🔍 Found module files: ${files[*]}"
+
+        changed=false
+        for rel in "${files[@]}"; do
+          # skip if absent in HEAD or BASE
+          if ! git cat-file -e HEAD:"$rel" 2>/dev/null; then
+            echo "ℹ️  '$rel' missing in PR branch; ignoring"
+            continue
+          fi
+          if ! git cat-file -e "$DIFF_BASE":"$rel" 2>/dev/null; then
+            echo "ℹ️  '$rel' missing in base (${DIFF_BASE}); ignoring"
+            continue
+          fi
+
+          # Search for first file that changed
+          if ! git diff --quiet "$DIFF_BASE"...HEAD -- "$rel"; then
+            changed=true
+            break
+          fi
+        done
+
+        echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
     - name: Run PatchLens analysis
       if: steps.go_mod.outputs.changed == 'true'
