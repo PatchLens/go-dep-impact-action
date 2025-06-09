@@ -81,6 +81,7 @@ runs:
         echo "🔍 Found module files: ${files[*]}"
 
         changed=false
+        mod_files=()
         for rel in "${files[@]}"; do
           # skip if absent in HEAD or BASE
           if ! git cat-file -e HEAD:"$rel" 2>/dev/null; then
@@ -92,14 +93,22 @@ runs:
             continue
           fi
 
-          # Search for first file that changed
+          # record changed modules
           if ! git diff --quiet "$DIFF_BASE"...HEAD -- "$rel"; then
             changed=true
-            break
+            [[ "$rel" == *go.mod ]] && mod_files+=("$rel")
           fi
         done
 
         echo "changed=$changed" >> "$GITHUB_OUTPUT"
+        if (( ${#mod_files[@]} )); then
+          echo "🔍 Updated go.mod files: ${mod_files[*]}"
+          {
+            echo 'files<<EOF'
+            printf '%s\n' "${mod_files[@]}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Run PatchLens analysis
       if: steps.go_mod.outputs.changed == 'true'
@@ -110,25 +119,44 @@ runs:
         REPO: ${{ github.event.pull_request.head.repo.clone_url }}
         BRANCH: ${{ github.event.pull_request.base.ref }}
         DIR: ${{ inputs.directory }}
+        FILES: ${{ steps.go_mod.outputs.files }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
 
-        # prepare path to go.mod
-        if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
-          GO_MOD="go.mod"
-        else
-          GO_MOD="${DIR%/}/go.mod"
+        # choose go.mod to analyze from changed files
+        if [[ -n "${FILES}" ]]; then
+          FIRST=$(printf '%s\n' "${FILES}" | head -n 1)
+          if [[ -n "${FIRST}" && "${FIRST}" == *go.mod ]]; then
+            GO_MOD="${FIRST}"
+            DIR="${FIRST%/go.mod}"
+          fi
         fi
+        if [[ -z "${GO_MOD:-}" ]]; then
+          if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
+            GO_MOD="go.mod"
+          else
+            GO_MOD="${DIR%/}/go.mod"
+          fi
+        fi
+
         # load and JSON-escape go.mod
         GOMOD_PAYLOAD=$(jq -Rs '.' < "${GO_MOD}")
+
+        MOD_SET='[]'
+        if [[ -n "${FILES}" ]]; then
+          MOD_SET=$(printf '%s\n' "${FILES}" | jq -R . | jq -s .)
+        fi
+
         # build the request
         PAYLOAD=$(jq -n \
           --arg repo   "${REPO}" \
           --arg branch "${BRANCH}" \
           --arg dir    "${DIR}" \
+          --arg path   "${GO_MOD}" \
           --argjson gomod "${GOMOD_PAYLOAD}" \
-          '{repo: $repo, branch: $branch, directory: $dir, gomod: $gomod}')
+          --argjson files "${MOD_SET}" \
+          '{repo: $repo, branch: $branch, directory: $dir, gomod_path: $path, gomod: $gomod, updated: $files}')
 
         # submit with retry
         START=$(date +%s)
