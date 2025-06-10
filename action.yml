@@ -37,8 +37,10 @@ runs:
     - name: Setup
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install --no-install-recommends -y jq
+        if ! command -v jq >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y jq
+        fi
 
     - name: Detect module changes
       id: go_mod
@@ -61,28 +63,34 @@ runs:
 
         # Determine root and scan for modules
         ROOT="${DIR:-.}"
-        ROOT="${ROOT%/}"
-        echo "🔍 Scanning for go.mod & go.work under '${ROOT}'"
-        mapfile -t files < <(
+        ROOT="${ROOT%/}" # Strip trailing slash
+        echo "🔍 Scanning '${ROOT}' for go.mod and go.work"
+        mapfile -t FILE_LIST < <(
           cd "$ROOT"
           find . \
             -path './vendor/*' -prune -o \
-            -path './.git/*'    -prune -o \
+            -path './.git/*'   -prune -o \
             -type f \( -name 'go.mod' -o -name 'go.work' \) \
             -printf '%P\n'
         )
 
-        if (( ${#files[@]} == 0 )); then
+        if (( ${#FILE_LIST[@]} == 0 )); then
           echo "✅ No go.mod or go.work found; skipping analysis"
           echo "changed=false" >> "$GITHUB_OUTPUT"
+          {
+        echo 'files<<EOF'
+        echo
+        echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        echo "🔍 Found module files: ${files[*]}"
+        echo "🔍 Found module files: ${FILE_LIST[*]}"
 
-        changed=false
-        for rel in "${files[@]}"; do
-          # skip if absent in HEAD or BASE
+        CHANGED=false
+        MOD_FILES=()
+        for rel in "${FILE_LIST[@]}"; do
+          # Ensure file exists in both HEAD and base
           if ! git cat-file -e HEAD:"$rel" 2>/dev/null; then
             echo "ℹ️  '$rel' missing in PR branch; ignoring"
             continue
@@ -92,14 +100,22 @@ runs:
             continue
           fi
 
-          # Search for first file that changed
+          # Record changed go.mod files (absolute from repo root)
           if ! git diff --quiet "$DIFF_BASE"...HEAD -- "$rel"; then
-            changed=true
-            break
+            CHANGED=true
+            [[ "$rel" == *go.mod ]] && MOD_FILES+=("${ROOT}/${rel#./}")
           fi
         done
 
-        echo "changed=$changed" >> "$GITHUB_OUTPUT"
+        echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+        {
+          echo 'files<<EOF'
+          printf '%s\n' "${MOD_FILES[@]}"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+        if (( ${#MOD_FILES[@]} )); then
+          echo "🔍 Updated go.mod files: ${MOD_FILES[*]}"
+        fi
 
     - name: Run PatchLens analysis
       if: steps.go_mod.outputs.changed == 'true'
@@ -110,25 +126,49 @@ runs:
         REPO: ${{ github.event.pull_request.head.repo.clone_url }}
         BRANCH: ${{ github.event.pull_request.base.ref }}
         DIR: ${{ inputs.directory }}
+        FILES: ${{ steps.go_mod.outputs.files }}
         GITHUB_TOKEN: ${{ inputs.github_token }}
+        TIMEOUT_MIN: ${{ inputs.timeout_minutes }}
       run: |
         set -euo pipefail
 
-        # prepare path to go.mod
-        if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
-          GO_MOD="go.mod"
+        # Prepare the set of changed go.mod files
+        mapfile -t MODS < <(printf '%s\n' "${FILES}" | grep -F 'go.mod' || true)
+
+        # If none detected, fallback to legacy behavior (single go.mod based on DIR or repo root)
+        if (( ${#MODS[@]} )); then
+          GO_MOD="${MODS[0]}"
+          [[ ! -f "$GO_MOD" ]] && { echo "❌ '$GO_MOD' does not exist"; exit 1; }
+          DIR_PATH=$(dirname "$GO_MOD")
+          [[ "$DIR_PATH" == "." ]] && DIR_PATH=""
         else
-          GO_MOD="${DIR%/}/go.mod"
+          if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
+            GO_MOD="go.mod"
+            DIR_PATH=""
+          else
+            GO_MOD="${DIR%/}/go.mod"
+            DIR_PATH="${DIR%/}"
+          fi
+          if [[ ! -f "$GO_MOD" ]]; then
+            echo "❌ No changed go.mod files detected, and default go.mod not found at '$GO_MOD'"
+            exit 1
+          fi
+          MODS=("$GO_MOD")
         fi
+
         # load and JSON-escape go.mod
-        GOMOD_PAYLOAD=$(jq -Rs '.' < "${GO_MOD}")
+        GOMOD_PAYLOAD=$(jq -Rs '.' < "$GO_MOD")
+        MOD_SET=$(printf '%s\n' "${MODS[@]}" | jq -R . | jq -s .)
+
         # build the request
         PAYLOAD=$(jq -n \
           --arg repo   "${REPO}" \
           --arg branch "${BRANCH}" \
-          --arg dir    "${DIR}" \
+          --arg dir    "${DIR_PATH}" \
+          --arg path   "${GO_MOD}" \
           --argjson gomod "${GOMOD_PAYLOAD}" \
-          '{repo: $repo, branch: $branch, directory: $dir, gomod: $gomod}')
+          --argjson updated "${MOD_SET}" \
+          '{repo:$repo, branch:$branch, directory:$dir, gomod_path:$path, gomod:$gomod, updated:$updated}')
 
         TIMEOUT=$(( ${{ inputs.timeout_minutes }} * 60 ))
 
@@ -162,6 +202,7 @@ runs:
           printf '❌ Error submitting to PatchLens: %s\n' "$RES"
           exit 1
         fi
+        echo "✅ Analysis started (job id: $JOB_ID)"
 
         # poll loop
         while true; do
