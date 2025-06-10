@@ -109,21 +109,30 @@ runs:
           --argjson gomod "${GOMOD_PAYLOAD}" \
           '{repo: $repo, branch: $branch, directory: $dir, gomod: $gomod}')
 
-        # submit with retry
-        START=$(date +%s)
         TIMEOUT=$(( ${{ inputs.timeout_minutes }} * 60 ))
-        until RES=$(curl -sfS -X POST "https://${HOST}/analyze-github" \
-                       -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                       -H "Content-Type: application/json" \
-                       -d "${PAYLOAD}"); do
-          NOW=$(date +%s)
-          if (( NOW - START >= TIMEOUT )); then
-            echo "❌ Submission failed after ${TIMEOUT}s" >&2
-            exit 1
-          fi
-          echo "⚠️ Submission failed, retrying in 30s…" >&2
-          sleep 30
-        done
+
+        curl_retry() {
+          local label=$1; shift
+          local start=$(date +%s)
+          local out
+          until out=$(curl --connect-timeout 10 --max-time 20 -sfS "$@"); do
+            if (( $(date +%s) - start >= TIMEOUT )); then
+              echo "❌ ${label} failed after ${TIMEOUT}s" >&2
+              return 1
+            fi
+            echo "⚠️ ${label} failed, retry in 30s…" >&2
+            sleep 30
+          done
+          echo "$out"
+        }
+
+        VER=$(curl_retry "version request" "https://${HOST}/version")
+        echo "$VER" | jq -r '"🔢 PatchLens version " + .commit + " rev " + (.rev|tostring) + " compiled " + .compiled'
+
+        RES=$(curl_retry "submission" -X POST "https://${HOST}/analyze-github" \
+                        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                        -H "Content-Type: application/json" \
+                        -d "${PAYLOAD}")
 
         echo "✅ Analysis started…"
         JOB_ID=$(echo "${RES}" | jq -r '.id')
@@ -134,22 +143,14 @@ runs:
 
         # poll loop
         while true; do
-          if ! STAT=$(curl -sfS -X POST "https://${HOST}/status" \
+          if ! STAT=$(curl_retry "status request" -X POST "https://${HOST}/status" \
             -H "Content-Type: application/json" \
             -d "{\"id\":\"${JOB_ID}\"}"); then
-            NOW=$(date +%s)
-            if (( NOW - START >= TIMEOUT )); then
-              echo "❌ Polling failed after ${TIMEOUT}s" >&2
-              exit 1
-            fi
-            echo "⚠️ Status request failed, retry in 30s…" >&2
-            sleep 30
-            continue
+            echo "analysis_error=true" >> "$GITHUB_OUTPUT"
+            echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
-          # save output for possible end comment
           echo "$STAT" > status.json
-          # reset start so timeout only counts during failures
-          START=$(date +%s)
           # print any new logs
           echo "${STAT}" | jq -r '.logs[]?' || true
 
