@@ -117,17 +117,17 @@ runs:
           local out
           until out=$(curl --connect-timeout 10 --max-time 20 -sfS "$@"); do
             if (( $(date +%s) - start >= TIMEOUT )); then
-              echo "❌ ${label} failed after ${TIMEOUT}s" >&2
+              printf '❌ %s failed after %ds\n' "$label" "$TIMEOUT" >&2
               return 1
             fi
-            echo "⚠️ ${label} failed, retry in 30s…" >&2
+            printf '⚠️ %s failed, retry in 30s…\n' "$label" >&2
             sleep 30
           done
-          echo "$out"
+          printf '%s\n' "$out"
         }
 
         VER=$(curl_retry "version request" "https://${HOST}/version")
-        echo "$VER" | jq -r '"🔢 PatchLens version " + .commit + " rev " + (.rev|tostring) + " compiled " + .compiled'
+        printf '%s\n' "$VER" | jq -r '"🔢 PatchLens version " + .commit + " rev " + (.rev|tostring) + " compiled " + .compiled'
 
         RES=$(curl_retry "submission" -X POST "https://${HOST}/analyze-github" \
                         -H "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -135,9 +135,10 @@ runs:
                         -d "${PAYLOAD}")
 
         echo "✅ Analysis started…"
-        JOB_ID=$(echo "${RES}" | jq -r '.id')
+
+        JOB_ID=$(printf '%s\n' "$RES" | jq -r '.id')
         if [[ -z "${JOB_ID}" ]]; then
-          echo "❌ Error submitting to PatchLens: $(echo "${RES}")"
+          printf '❌ Error submitting to PatchLens: %s\n' "$RES"
           exit 1
         fi
 
@@ -150,22 +151,23 @@ runs:
             echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          echo "$STAT" > status.json
+          printf '%s\n' "$STAT" > status.json
           # print any new logs
-          echo "${STAT}" | jq -r '.logs[]?' || true
+          printf '%s\n' "$STAT" | jq -r '.logs[]?' || true
 
           # check if service reports an error
-          ERROR=$(echo "${STAT}" | jq -r '.error // empty')
+          ERROR=$(printf '%s\n' "$STAT" | jq -r '.error // empty')
           if [[ "${ERROR}" == "true" ]]; then
-            echo "❌ Analysis failed: $(echo "${STAT}" | jq -r '.error_message // "Unknown error"')"
+            error_message=$(printf '%s\n' "$STAT" | jq -r '.error_message // "Unknown error"')
+            printf '❌ Analysis failed: %s\n' "$error_message"
             # set outputs for error and unreachable count
             echo "analysis_error=true" >> "$GITHUB_OUTPUT"
             echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          QUEUED=$(echo "${STAT}" | jq -r '.queued')
-          RUNNING=$(echo "${STAT}" | jq -r '.running')
+          QUEUED=$(printf '%s\n' "$STAT" | jq -r '.queued')
+          RUNNING=$(printf '%s\n' "$STAT" | jq -r '.running')
 
           if [[ "${QUEUED}" == "true" ]]; then
             echo "⏳ queued…"
@@ -177,11 +179,11 @@ runs:
             # parse end report reachable_changed_function_count
             COUNT=$(jq -r '.end_report.module.reachable_changed_function_count // 0' status.json)
             echo "📊 Final report:"
-            echo "${STAT}" | jq '.end_report'
+            printf '%s\n' "$STAT" | jq '.end_report'
             echo "✅ Done"
             # set output for reachable_changed_function_count
             echo "analysis_error=false" >> "$GITHUB_OUTPUT"
-            echo "reachable_changed_function_count=${COUNT}" >> "$GITHUB_OUTPUT"
+            printf 'reachable_changed_function_count=%d\n' "$COUNT" >> "$GITHUB_OUTPUT"
             break
           fi
 
@@ -228,7 +230,7 @@ runs:
         BASE="reports/${REPO_NAME}-${PR_NUMBER}-$(date +%s)"
         PNG_FILE="${BASE}.png"
         JSON_FILE="${BASE}.json"
-        echo "$B64" | base64 --decode > "$PNG_FILE"
+        printf '%s\n' "$B64" | base64 --decode > "$PNG_FILE"
         jq '.end_report' status.json > "$JSON_FILE"
 
         # add, commit, and push with retry on conflict
@@ -238,14 +240,14 @@ runs:
           if git push origin "$ASSETS_BRANCH"; then
             break
           else
-            echo "⚠️ Push conflict (attempt $i), fetching & rebasing…" >&2
+            printf '⚠️ Push conflict (attempt %d), fetching & rebasing…\n' "$i" >&2
             git pull --rebase origin "$ASSETS_BRANCH"
           fi
         done
 
         # export raw URLs for the next comment step
-        echo "report_chart_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
-        echo "report_json_url=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
+        printf 'report_chart_url=%s\n' "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
+        printf 'report_json_url=%s\n' "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
 
     - name: Comment results on PR (not reachable)
       if: steps.go_mod.outputs.changed == 'true' &&
