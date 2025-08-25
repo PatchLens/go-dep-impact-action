@@ -1,17 +1,17 @@
 # go-dep-impact-action
 
-A GitHub Action for deep, automated risk analysis of Go module dependency updates, and their effects on your project.
+A GitHub Action for automated risk analysis of Go module dependency updates using the open-source [PatchLens](https://github.com/PatchLens/go-update-lens) tool.
 
-This tool is in an early release state. We provide free hosted usage to Open Source projects which have a declared Apache 2.0, BSD-2-Clause, BSD-3-Clause, or MIT license.
+This action downloads and runs PatchLens binaries directly in your GitHub Actions workflow, providing dependency analysis without external service dependencies.
 
 > **Usage Note:**  
-> The action runs for the full analysis duration, which may range from several minutes to over an hour. GitHub Actions usage minutes are consumed during status polling. For optimized workflows, consider our [GitHub App go-dep-impact-app](https://github.com/PatchLens/go-dep-impact-app).
+> Analysis duration may range from several minutes to over an hour. Be mindful of your actions usage.
 
 ---
 
 ## How PatchLens Works
 
-This action interfaces with the PatchLens service, submitting your repository for deep static and dynamic analysis through our API. Your `GITHUB_TOKEN` is used for authentication. The repository must be public, and all tests must run without network access for analysis to succeed (see [limitations](#limitations)).
+This action downloads and runs the open-source PatchLens binaries directly in your GitHub Actions environment. The analysis happens locally on your runner without sending data to external services.
 
 You can read details about our [methodology on our website](https://patchlens.com/methodology). At a high level, our tool evaluates the risk of a dependency update by:
 
@@ -34,22 +34,16 @@ Once testing is complete, we evaluate the confidence of the analysis by introduc
 * **Improve confidence**  
   Know exactly which parts of your code and tests are impacted by a dependency bump.
 
+Learn more at the [PatchLens repository](https://github.com/PatchLens/go-update-lens).
+
 ---
 
 ## Usage
 
-Add this Action to your workflow to analyze Go module changes. The action:
-
-* Detects `go.mod` changes on pull requests
-* Submits the PatchLens analysis job and polls for results
-* Posts a clear, actionable report as a comment on your PR
-
-### Example: Analyze Dependabot PRs
-
-Create a file at `.github/workflows/patchlens-dependabot.yml`:
+### Basic Setup
 
 ```yaml
-name: PatchLens on Dependabot PRs
+name: PatchLens Analysis
 
 on:
   pull_request:
@@ -62,43 +56,47 @@ permissions:
 
 jobs:
   analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: PatchLens/go-dep-impact-action@v0.2.0
+```
+
+### Dependabot Integration
+
+```yaml
+jobs:
+  analyze:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
-
     steps:
-      - name: Run PatchLens Go Module Update Analysis
-        uses: PatchLens/go-dep-impact-action@v1
+      - uses: PatchLens/go-dep-impact-action@v0.2.0
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          directory: ''         # or 'projects/foo' if go.mod is in a subdirectory
-          timeout_minutes: '20' # retry timeout
+          directory: 'services/api'  # if go.mod is in subdirectory
 ```
 
 ### Inputs
 
-| Name              | Description                                               | Default | Required |
-| ----------------- | --------------------------------------------------------- | ------- | -------- |
-| `directory`       | Sub-directory containing `go.mod` (relative to repo root) | `''`    | false    |
-| `timeout_minutes` | Timeout for submission & polling retries, in minutes      | `20`    | false    |
-| `github_token`    | Set to ${{ secrets.GITHUB_TOKEN }} for authentication     | `''`    | true     |
+| Name           | Description                          | Default       | Required |
+| -------------- | ------------------------------------ | ------------- | -------- |
+| `directory`    | Subdirectory containing `go.mod`     | `''` (root)   | false    |
+| `github_token` | GitHub token for authentication      | `github.token` | false    |
 
-### Limitations
+---
 
-Our tool is still in an early phase of development. Because of this, there are several limitations that may impact your usage:
+## Features
 
-* Tests must be functional without network access ([contact us](https://patchlens.com/contact) for network support)
-* Repositories must be public on GitHub, and have an approved license ([contact us](https://patchlens.com/contact) for private or enterprise support)
-* `go.work` files are not fully supported; analysis must be run separately on each individual go.mod module within the workspace
-* Unit tests must be fast enough to complete within 30 seconds per-test
-* Reflection and network requests are not able to be analyzed, tests dependent on reflection or RPC may not be detected to be relevant for module changes
-* Field size limits exist, currently configured to recurse 20 fields deep and examine slices up to the first 1000 entries
-* Test memory usage is limited to 8GB (including needed overhead for our tool)
-* Test disk usage is also restricted
+- **Automatic platform detection** - Works on Linux and macOS runners (amd64, arm64)
+- **Binary caching** - Downloads cached between runs for faster execution
+- **Visual reports** - Charts and detailed analysis posted as PR comments
+- **Private repository support** - Works with private Go modules via GitHub token
 
-### Assets
+---
 
-On a successful analysis, the branch `patchlens-assets` will be created. This branch will hold the reports from the analysis to reference in the comments.
+## Output
 
-## Terms of Service
+The action generates:
+- **PR Comments** with analysis summary and visual charts
+- **JSON Reports** with detailed findings stored in `patchlens-assets` branch
+- **Performance metrics** showing impact of dependency changes
 
-By using this Action, you agree to our "as is" [Terms of Service](https://patchlens.com/terms-of-service) and [Privacy Policy](https://patchlens.com/privacy-policy).
+Analysis runs only when `go.mod` files are modified and posts results directly to your pull request.

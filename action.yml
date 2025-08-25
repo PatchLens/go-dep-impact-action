@@ -1,5 +1,5 @@
 name: 'PatchLens Go Module Update Analysis'
-description: 'Submit request to PatchLens service to analyze a public GitHub repo and validate the dependency update'
+description: 'Analyze Go module dependency updates using PatchLens tool'
 author: 'PatchLens'
 branding:
   icon: 'package'
@@ -15,13 +15,13 @@ inputs:
     description: 'Sub-directory containing go.mod (relative to repo root)'
     required: false
     default: ''
-  timeout_minutes:
-    description: 'Timeout for error retries in minutes'
+  go_version:
+    description: 'Go version to use for analysis'
     required: false
-    default: '20'
+    default: '1.24'
   github_token:
-    description: 'GitHub token for authentication (use secrets.GITHUB_TOKEN)'
-    required: true
+    description: 'GitHub token for private modules (optional, defaults to GITHUB_TOKEN)'
+    required: false
 
 runs:
   using: composite
@@ -29,16 +29,22 @@ runs:
     - name: Checkout PR code
       uses: actions/checkout@v4
       with:
-        token: ${{ inputs.github_token }}
+        token: ${{ inputs.github_token || github.token }}
         ref: ${{ github.event.pull_request.head.ref }}
         fetch-depth: 0
         persist-credentials: true
 
-    - name: Setup
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go_version }}
+
+    - name: Setup dependencies
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y jq
+        go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@v0.0.0-20250418092011-3ce278f4e19f
 
     - name: Detect module changes
       id: go_mod
@@ -63,10 +69,16 @@ runs:
         DIR="${{ inputs.directory }}"
         if [[ -z "$DIR" || "$DIR" == "." ]]; then
           MODPATH="go.mod"
+          PROJECT_DIR="${GITHUB_WORKSPACE}"
         else
           DIR="${DIR%/}" # strip any trailing slash
           MODPATH="${DIR}/go.mod"
+          PROJECT_DIR="${GITHUB_WORKSPACE}/${DIR}"
         fi
+
+        # export for use in subsequent steps
+        echo "GO_MOD_PATH=$MODPATH" >> "$GITHUB_OUTPUT"
+        echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
         if git diff --quiet "${DIFF_BASE}...HEAD" -- "$MODPATH"; then
           echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -80,115 +92,152 @@ runs:
       run: |
         echo "✅ no changes in go.mod; skipping PatchLens analysis"
 
+    - name: Detect platform and download PatchLens binaries
+      if: steps.go_mod.outputs.changed == 'true'
+      id: download
+      shell: bash
+      run: |
+        VERSION="v0.0.2"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        set -euo pipefail
+
+        # Auto-detect platform
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+
+        # Normalize architecture names to match release naming
+        case "$ARCH" in
+          x86_64) ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+          *) echo "❌ Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+
+        # Normalize OS names to match release naming
+        case "$OS" in
+          linux) OS="linux" ;;
+          darwin) OS="darwin" ;;
+          *) echo "❌ Unsupported OS: $OS"; exit 1 ;;
+        esac
+
+        echo "🖥️ Detected platform: ${OS}-${ARCH}"
+
+        echo "⬇️ Downloading PatchLens binary version ${VERSION}..."
+
+        # Download modlens binary
+        BASE_URL="https://github.com/PatchLens/go-update-lens/releases/download/${VERSION}"
+        MODLENS_URL="${BASE_URL}/modlens-${OS}-${ARCH}"
+        echo "📥 Downloading modlens from: $MODLENS_URL"
+        if ! curl -fsSL -o modlens "$MODLENS_URL"; then
+          echo "❌ Failed to download modlens binary"
+          echo "💡 Check if version ${VERSION} exists and supports" \
+            "${OS}-${ARCH}"
+          exit 1
+        fi
+        chmod +x modlens
+
+        # Verify binary is executable
+        if [[ ! -x ./modlens ]]; then
+          echo "❌ modlens binary is not executable"
+          exit 1
+        fi
+
+    - name: Get base go.mod for comparison
+      if: steps.go_mod.outputs.changed == 'true'
+      shell: bash
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+        GO_MOD_PATH: ${{ steps.go_mod.outputs.GO_MOD_PATH }}
+        PROJECT_DIR: ${{ steps.go_mod.outputs.PROJECT_DIR }}
+      run: |
+        set -euo pipefail
+
+        # Get base version of go.mod for comparison
+        echo "📥 Fetching base go.mod from upstream/${BASE_REF}"
+        git show "upstream/${BASE_REF}:${GO_MOD_PATH}" > "${PROJECT_DIR}/go.mod.base"
+
+        # Save current go.mod as updated version
+        cp "${GO_MOD_PATH}" "${PROJECT_DIR}/go.mod.updated"
+
     - name: Run PatchLens analysis
       if: steps.go_mod.outputs.changed == 'true'
       id: analysis
       shell: bash
       env:
-        HOST: api.patchlens.com
-        REPO: ${{ github.event.pull_request.head.repo.clone_url }}
-        BRANCH: ${{ github.event.pull_request.base.ref }}
-        DIR: ${{ inputs.directory }}
-        GITHUB_TOKEN: ${{ inputs.github_token }}
+        VERSION: ${{ steps.download.outputs.version }}
+        PROJECT_DIR: ${{ steps.go_mod.outputs.PROJECT_DIR }}
+        GO_MOD_PATH: ${{ steps.go_mod.outputs.GO_MOD_PATH }}
       run: |
         set -euo pipefail
 
-        # prepare path to go.mod
-        if [[ -z "${DIR}" || "${DIR}" == "." ]]; then
-          GO_MOD="go.mod"
-        else
-          GO_MOD="${DIR%/}/go.mod"
+        echo "📂 Project directory: ${PROJECT_DIR}"
+
+        # First, use updated go.mod to download all dependencies
+        echo "📦 Downloading modules..."
+        cd "${PROJECT_DIR}"
+        cp go.mod.updated go.mod
+        go mod tidy
+        go mod download all
+        
+        # Now use base go.mod to download base dependencies
+        cp go.mod.base go.mod
+        go mod tidy
+        go mod download all
+        cd "$GITHUB_WORKSPACE"
+
+        echo "🚀 Running modlens analysis..."
+        # run modlens analysis with updated go.mod
+        ./modlens \
+          -project "${PROJECT_DIR}" \
+          -gomod "${PROJECT_DIR}/go.mod.updated" \
+          -json "modreport.json" \
+          -charts "modreport.png"
+        MODLENS_EXIT_CODE=$?
+
+        if [[ $MODLENS_EXIT_CODE -ne 0 ]]; then
+          echo "⚠️ modlens analysis encountered issues" \
+            "(exit code: $MODLENS_EXIT_CODE)"
+
+          # Check if we got partial results
+          if [[ -f "modreport.json" ]]; then
+            echo "📊 Found partial results, continuing with report generation..."
+          else
+            echo "❌ No analysis results generated"
+            echo "analysis_error=true" >> "$GITHUB_OUTPUT"
+            echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
         fi
-        # load and JSON-escape go.mod
-        GOMOD_PAYLOAD=$(jq -Rs '.' < "${GO_MOD}")
-        # build the request
-        PAYLOAD=$(jq -n \
-          --arg repo   "${REPO}" \
-          --arg branch "${BRANCH}" \
-          --arg dir    "${DIR}" \
-          --argjson gomod "${GOMOD_PAYLOAD}" \
-          '{repo: $repo, branch: $branch, directory: $dir, gomod: $gomod}')
 
-        TIMEOUT=$(( ${{ inputs.timeout_minutes }} * 60 ))
+        # check if we have results
+        if [[ -f "modreport.json" ]]; then
+          COUNT=$(jq -r \
+            '.module.reachable_changed_function_count // 0' modreport.json)
+          echo ""
+          echo "📊 Analysis Summary:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔄 Reachable changed functions: ${COUNT}"
 
-        curl_retry() {
-          local label=$1; shift
-          local start=$(date +%s)
-          local out
-          until out=$(curl --connect-timeout 10 --max-time 20 -sfS "$@"); do
-            if (( $(date +%s) - start >= TIMEOUT )); then
-              printf '❌ %s failed after %ds\n' "$label" "$TIMEOUT" >&2
-              return 1
-            fi
-            printf '⚠️ %s failed, retry in 30s…\n' "$label" >&2
-            sleep 30
-          done
-          printf '%s\n' "$out"
-        }
+          # Show module update summary if available
+          jq -r '.module.summary // empty' modreport.json 2>/dev/null || true
 
-        VER=$(curl_retry "version request" "https://${HOST}/version")
-        printf '%s\n' "$VER" | jq -r '"🔢 PatchLens version " + .commit + " rev " + (.rev|tostring) + " compiled " + .compiled'
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        RES=$(curl_retry "submission" -X POST "https://${HOST}/analyze-github" \
-                        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-                        -H "Content-Type: application/json" \
-                        -d "${PAYLOAD}")
+          echo "analysis_error=false" >> "$GITHUB_OUTPUT"
+          printf 'reachable_changed_function_count=%d\n' \
+            "$COUNT" >> "$GITHUB_OUTPUT"
 
-        echo "✅ Analysis started…"
-
-        JOB_ID=$(printf '%s\n' "$RES" | jq -r '.id')
-        if [[ -z "${JOB_ID}" ]]; then
-          printf '❌ Error submitting to PatchLens: %s\n' "$RES"
+          # Convert chart to base64 for upload step
+          if [[ -f "modreport.png" ]]; then
+            base64 -w 0 modreport.png > modreport.png.b64
+          else
+            echo "⚠️ No visual report generated, continuing without chart"
+          fi
+        else
+          echo "❌ Analysis failed: no report generated"
+          echo "analysis_error=true" >> "$GITHUB_OUTPUT"
+          echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
           exit 1
         fi
-
-        # poll loop
-        while true; do
-          if ! STAT=$(curl_retry "status request" -X POST "https://${HOST}/status" \
-            -H "Content-Type: application/json" \
-            -d "{\"id\":\"${JOB_ID}\"}"); then
-            echo "analysis_error=true" >> "$GITHUB_OUTPUT"
-            echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          printf '%s\n' "$STAT" > status.json
-          # print any new logs
-          printf '%s\n' "$STAT" | jq -r '.logs[]?' || true
-
-          # check if service reports an error
-          ERROR=$(printf '%s\n' "$STAT" | jq -r '.error // empty')
-          if [[ "${ERROR}" == "true" ]]; then
-            error_message=$(printf '%s\n' "$STAT" | jq -r '.error_message // "Unknown error"')
-            printf '❌ Analysis failed: %s\n' "$error_message"
-            # set outputs for error and unreachable count
-            echo "analysis_error=true" >> "$GITHUB_OUTPUT"
-            echo "reachable_changed_function_count=0" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          QUEUED=$(printf '%s\n' "$STAT" | jq -r '.queued')
-          RUNNING=$(printf '%s\n' "$STAT" | jq -r '.running')
-
-          if [[ "${QUEUED}" == "true" ]]; then
-            echo "⏳ queued…"
-            sleep 10
-            continue
-          fi
-
-          if [[ "${RUNNING}" == "false" ]]; then
-            # parse end report reachable_changed_function_count
-            COUNT=$(jq -r '.end_report.module.reachable_changed_function_count // 0' status.json)
-            echo "📊 Final report:"
-            printf '%s\n' "$STAT" | jq '.end_report'
-            echo "✅ Done"
-            # set output for reachable_changed_function_count
-            echo "analysis_error=false" >> "$GITHUB_OUTPUT"
-            printf 'reachable_changed_function_count=%d\n' "$COUNT" >> "$GITHUB_OUTPUT"
-            break
-          fi
-
-          sleep 10
-        done
 
     - name: Upload report image to patchlens-assets branch
       id: upload_report
@@ -197,26 +246,28 @@ runs:
           steps.analysis.outputs.reachable_changed_function_count != '0'
       shell: bash
       env:
-        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
         ASSETS_BRANCH: patchlens-assets
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
 
         # prepare content
-        B64=$(jq -r '.report_chart64 // .reportChart64' status.json)
-        if [[ -z "$B64" ]]; then
+        if [[ ! -f "modreport.png.b64" ]]; then
           echo "⚠️ No chart data, skipping upload."
           echo "report_chart_url=" >> "$GITHUB_OUTPUT"
           echo "report_json_url=" >> "$GITHUB_OUTPUT"
           exit 0
         fi
+        B64=$(cat modreport.png.b64)
 
         git config --global user.name "github-actions[bot]"
-        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.email \
+          "github-actions[bot]@users.noreply.github.com"
         git fetch origin "$ASSETS_BRANCH" || true
 
         # fetch or create orphaned assets branch
+        git reset --hard HEAD # reset go.sum / mod changes
         if git rev-parse --verify "origin/$ASSETS_BRANCH" >/dev/null 2>&1; then
           git checkout -B "$ASSETS_BRANCH" "origin/$ASSETS_BRANCH"
         else
@@ -231,23 +282,27 @@ runs:
         PNG_FILE="${BASE}.png"
         JSON_FILE="${BASE}.json"
         printf '%s\n' "$B64" | base64 --decode > "$PNG_FILE"
-        jq '.end_report' status.json > "$JSON_FILE"
+        cp modreport.json "$JSON_FILE"
 
         # add, commit, and push with retry on conflict
         git add "$PNG_FILE" "$JSON_FILE"
-        git commit -m "PatchLens report for ${REPO_NAME} PR #${PR_NUMBER}"
+        git commit -m \
+          "PatchLens report for ${REPO_NAME} PR #${PR_NUMBER}"
         for i in {1..10}; do
           if git push origin "$ASSETS_BRANCH"; then
             break
           else
-            printf '⚠️ Push conflict (attempt %d), fetching & rebasing…\n' "$i" >&2
+            printf '⚠️ Push conflict (attempt %d), fetching…\n' "$i" >&2
             git pull --rebase origin "$ASSETS_BRANCH"
           fi
         done
 
         # export raw URLs for the next comment step
-        printf 'report_chart_url=%s\n' "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
-        printf 'report_json_url=%s\n' "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
+        BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${ASSETS_BRANCH}"
+        printf 'report_chart_url=%s\n' \
+          "${BASE_URL}/${PNG_FILE}" >> "$GITHUB_OUTPUT"
+        printf 'report_json_url=%s\n' \
+          "${BASE_URL}/${JSON_FILE}" >> "$GITHUB_OUTPUT"
 
     - name: Comment results on PR (not reachable)
       if: steps.go_mod.outputs.changed == 'true' &&
@@ -255,7 +310,7 @@ runs:
           steps.analysis.outputs.reachable_changed_function_count == '0'
       uses: actions/github-script@v7
       with:
-        github-token: ${{ inputs.github_token }}
+        github-token: ${{ inputs.github_token || github.token }}
         script: |
           // delete old PatchLens comments
           const { data: comments } = await github.rest.issues.listComments({
@@ -296,7 +351,7 @@ runs:
         REPORT_CHART_URL: ${{ steps.upload_report.outputs.report_chart_url }}
         REPORT_JSON_URL: ${{ steps.upload_report.outputs.report_json_url }}
       with:
-        github-token: ${{ inputs.github_token }}
+        github-token: ${{ inputs.github_token || github.token }}
         script: |
           const chartUrl = process.env.REPORT_CHART_URL;
           const jsonUrl = process.env.REPORT_JSON_URL;
@@ -337,4 +392,3 @@ runs:
               ''
             ].join('\n')
           });
-
