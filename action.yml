@@ -1,3 +1,4 @@
+---
 name: 'PatchLens Go Module Update Analysis'
 description: 'Analyze Go module dependency updates using PatchLens tool'
 author: 'PatchLens'
@@ -177,7 +178,7 @@ runs:
         cp go.mod.updated go.mod
         go mod tidy
         go mod download all
-        
+
         # Now use base go.mod to download base dependencies
         cp go.mod.base go.mod
         go mod tidy
