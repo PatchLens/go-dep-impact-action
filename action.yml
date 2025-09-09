@@ -309,7 +309,7 @@ runs:
       if: steps.go_mod.outputs.changed == 'true' &&
           steps.analysis.outputs.analysis_error == 'false' &&
           steps.analysis.outputs.reachable_changed_function_count == '0'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       with:
         github-token: ${{ inputs.github_token || github.token }}
         script: |
@@ -347,7 +347,7 @@ runs:
       if: steps.go_mod.outputs.changed == 'true' &&
           steps.analysis.outputs.analysis_error == 'false' &&
           steps.analysis.outputs.reachable_changed_function_count != '0'
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       env:
         REPORT_CHART_URL: ${{ steps.upload_report.outputs.report_chart_url }}
         REPORT_JSON_URL: ${{ steps.upload_report.outputs.report_json_url }}
