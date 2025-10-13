@@ -98,7 +98,7 @@ runs:
       id: download
       shell: bash
       run: |
-        VERSION="v0.0.5"
+        VERSION="v0.1.0"
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         set -euo pipefail
 
